@@ -1,0 +1,15 @@
+# Render.com blueprint — free-tier web service for UnderViz.
+# Render injects PORT automatically; the server already reads process.env.PORT.
+# server/data/ is ephemeral on the free plan: accumulated forecast history is
+# lost on restarts and refilled from Open-Meteo hindcast — by design.
+services:
+  - type: web
+    name: underviz
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: WINDY_API_KEY
+        sync: false # set the value in the Render dashboard, never in git
