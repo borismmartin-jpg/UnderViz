@@ -173,6 +173,31 @@ test('pipeline: ebb tide boosts runoff turbidity at a river mouth, flood suppres
   assert.ok(ebb[10].tide.factor > 1 && flood[10].tide.factor < 1);
 });
 
+test('pipeline: bottom-type variants bracket the nominal run (band is well-ordered)', () => {
+  // Mirrors the client's uncertainty band: blending sediment params halfway
+  // toward the reef preset must never read worse than nominal, and halfway
+  // toward silt must never read better.
+  const blend = (site, p, f) => ({
+    ...site,
+    E: site.E + (p.E - site.E) * f,
+    w_s: site.w_s + (p.w_s - site.w_s) * f,
+    u_crit: site.u_crit + (p.u_crit - site.u_crit) * f,
+  });
+  const reef = { E: 0.3, u_crit: 0.13, w_s: 0.0004 };
+  const silt = { E: 1.2, u_crit: 0.08, w_s: 0.0001 };
+  const hours = cannedScenario();
+  const nominal = runPipeline(hours, EXPOSED_METRO, 3);
+  const coarse = runPipeline(hours, blend(EXPOSED_METRO, reef, 0.5), 3);
+  const fine = runPipeline(hours, blend(EXPOSED_METRO, silt, 0.5), 3);
+  for (let i = 0; i < nominal.length; i++) {
+    assert.ok(coarse[i].vis >= nominal[i].vis - 1e-9, `coarse < nominal at hour ${i}`);
+    assert.ok(fine[i].vis <= nominal[i].vis + 1e-9, `fine > nominal at hour ${i}`);
+  }
+  // The band must actually open up during the swell event (not degenerate).
+  const mid = 3.5 * 24;
+  assert.ok(coarse[mid].vis - fine[mid].vis > 0.5, 'band should be visibly wide mid-event');
+});
+
 test('pipeline: buoy nudge scales heights fully in hindcast, fading over the forecast', () => {
   const hours = [];
   for (let h = 0; h < 72; h++) {

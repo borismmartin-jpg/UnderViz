@@ -106,12 +106,30 @@ function buildNudge(payload) {
   return { ratio, ts: b.at, hsObs: b.hs, hsModel: b.hsModel, name: b.name, distKm: b.distKm };
 }
 
+// Blend the site's sediment character toward a bottom-type preset — used to
+// bracket the forecast with "what if the ground here is coarser / finer".
+function bottomVariant(site, preset, blend) {
+  return {
+    ...site,
+    E: site.E + (preset.E - site.E) * blend,
+    w_s: site.w_s + (preset.w_s - site.w_s) * blend,
+    u_crit: site.u_crit + (preset.u_crit - site.u_crit) * blend,
+  };
+}
+
 function recompute() {
   const site = state.sites.find((s) => s.id === state.siteId);
   if (!site || !state.payload) return;
   const depth = depthFor(site);
   state.nudge = buildNudge(state.payload);
-  state.results = runPipeline(state.payload.hours, site, depth, { nudge: state.nudge });
+  const opts = { nudge: state.nudge };
+  state.results = runPipeline(state.payload.hours, site, depth, opts);
+  // Bottom-type uncertainty band: clearer bound (coarser, reef-like ground)
+  // and murkier bound (finer, silt/mud-like ground).
+  state.resultsCoarse = runPipeline(
+    state.payload.hours, bottomVariant(site, BOTTOM_PRESETS.reef, MODEL.BAND_BLEND), depth, opts);
+  state.resultsFine = runPipeline(
+    state.payload.hours, bottomVariant(site, BOTTOM_PRESETS.silt, MODEL.BAND_BLEND), depth, opts);
   renderDepth(site, depth);
   renderAll();
 }
@@ -134,6 +152,20 @@ function renderAll() {
   $('#heroVis').textContent = fmtVis(current.vis);
   $('#heroVis').style.color = visColor(current.vis);
   $('#heroWhen').textContent = 'now';
+  const nearestIn = (arr) => {
+    if (!arr?.length) return null;
+    let best = arr[0];
+    for (const r of arr) if (Math.abs(r.ts - now) < Math.abs(best.ts - now)) best = r;
+    return best;
+  };
+  const hiR = nearestIn(state.resultsCoarse), loR = nearestIn(state.resultsFine);
+  if (hiR && loR) {
+    const hi = Math.max(current.vis, hiR.vis, loR.vis);
+    const lo = Math.min(current.vis, hiR.vis, loR.vis);
+    $('#heroRange').textContent = `${fmtVis(lo)}–${fmtVis(hi)} m depending on bottom type`;
+  } else {
+    $('#heroRange').textContent = '';
+  }
   const lastVis = loadJson(LS_LASTVIS, {});
   lastVis[state.siteId] = current.vis;
   saveJson(LS_LASTVIS, lastVis);
@@ -209,13 +241,29 @@ const CH = { w: 720, h: 240, padL: 34, padR: 10, padT: 12, padB: 26 };
 function renderChart(now) {
   const from = now - MODEL.DISPLAY_PAST_DAYS * DAY_MS;
   const to = now + MODEL.FORECAST_DAYS * DAY_MS;
-  const rows = state.results.filter((r) => r.ts >= from && r.ts <= to);
+  const inWindow = (r) => r.ts >= from && r.ts <= to;
+  const rows = state.results.filter(inWindow);
   if (!rows.length) { $('#chartWrap').innerHTML = '<p class="muted">no data in window</p>'; return; }
 
+  // Bottom-type band: per-hour envelope of nominal + coarser + finer runs.
+  const coarse = (state.resultsCoarse ?? []).filter(inWindow);
+  const fine = (state.resultsFine ?? []).filter(inWindow);
+  const band = rows.map((r, i) => ({
+    ts: r.ts,
+    hi: Math.max(r.vis, coarse[i]?.vis ?? r.vis, fine[i]?.vis ?? r.vis),
+    lo: Math.min(r.vis, coarse[i]?.vis ?? r.vis, fine[i]?.vis ?? r.vis),
+  }));
+
   const tMin = rows[0].ts, tMax = rows[rows.length - 1].ts;
-  const vMax = Math.max(10, Math.ceil(Math.max(...rows.map((r) => r.vis)) / 5) * 5);
+  const vTop = Math.max(...band.map((b) => b.hi), ...rows.map((r) => r.vis));
+  const vMax = Math.max(10, Math.ceil(vTop / 5) * 5);
   const X = (t) => CH.padL + ((t - tMin) / (tMax - tMin)) * (CH.w - CH.padL - CH.padR);
   const Y = (v) => CH.padT + (1 - v / vMax) * (CH.h - CH.padT - CH.padB);
+
+  let bandPath = '';
+  band.forEach((b, i) => { bandPath += `${i ? 'L' : 'M'}${X(b.ts).toFixed(1)},${Y(b.hi).toFixed(1)}`; });
+  for (let i = band.length - 1; i >= 0; i--) bandPath += `L${X(band[i].ts).toFixed(1)},${Y(band[i].lo).toFixed(1)}`;
+  bandPath += 'Z';
 
   let path = '';
   rows.forEach((r, i) => { path += `${i ? 'L' : 'M'}${X(r.ts).toFixed(1)},${Y(r.vis).toFixed(1)}`; });
@@ -245,9 +293,11 @@ function renderChart(now) {
       fill="var(--grey)" opacity="0.15"/>
     <line x1="${xNow}" y1="${CH.padT}" x2="${xNow}" y2="${CH.h - CH.padB}" stroke="var(--muted)" stroke-dasharray="3,3"/>
     <text x="${xNow + 3}" y="${CH.padT + 9}" fill="var(--muted)" font-size="10">now</text>
+    <path d="${bandPath}" fill="var(--accent)" opacity="0.14" stroke="none"/>
     <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2"/>
     <line x1="${xSel}" y1="${CH.padT}" x2="${xSel}" y2="${CH.h - CH.padB}" stroke="var(--ok)" stroke-width="1.5" opacity="0.9"/>
-  </svg>`;
+  </svg>
+  <div class="muted" style="font-size:11px;margin-top:2px">band = bottom-type range: coarser reef/sand ground (clearer) ↔ finer silt/mud (murkier)</div>`;
   $('#chartWrap').innerHTML = svg;
 
   const el = $('#chartSvg');
