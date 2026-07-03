@@ -2,11 +2,11 @@
 //   1. Hindcast source (past_days=7) to initialise the sediment state, since
 //      Windy Point Forecast returns forecast data only.
 //   2. Full fallback data source when the Windy call fails.
-// Marine API supplies swell; the standard forecast API supplies wind & rain.
-// Wind sea is NOT taken from Open-Meteo — the model computes it from wind +
-// per-site fetch, consistent with the Windy path.
+// Marine API supplies swell/wind-waves/sea level; wind & rain come from
+// server/weather.js, which layers three independent sources.
 
 import { SERVER } from '../lib/config.js';
+import { fetchWindRain } from './weather.js';
 
 async function getJson(url) {
   const ctrl = new AbortController();
@@ -31,33 +31,26 @@ export async function fetchOpenMeteoHours(lat, lon, { pastDays = 7, forecastDays
   const marineUrl = `https://marine-api.open-meteo.com/v1/marine?${common}` +
     '&hourly=swell_wave_height,swell_wave_period,swell_wave_direction,' +
     'wind_wave_height,wind_wave_period,wind_wave_direction,sea_level_height_msl';
-  const wxUrl = `https://api.open-meteo.com/v1/forecast?${common}` +
-    '&hourly=wind_speed_10m,wind_direction_10m,precipitation&wind_speed_unit=ms';
 
   const warnings = [];
-  const [marineRes, wxRes] = await Promise.allSettled([getJson(marineUrl), getJson(wxUrl)]);
+  const [marineRes, wxRes] = await Promise.allSettled([
+    getJson(marineUrl),
+    fetchWindRain(lat, lon, { pastDays, forecastDays }),
+  ]);
   if (marineRes.status === 'rejected') throw marineRes.reason;
   const marine = marineRes.value;
-  let wx = null;
-  if (wxRes.status === 'rejected') {
-    warnings.push(`Open-Meteo weather failed (${wxRes.reason?.message}); wind/rain unavailable for these hours`);
-  } else {
-    wx = wxRes.value;
-  }
-  const mh = marine?.hourly, wh = wx?.hourly;
-  if (!mh?.time?.length) throw new Error('Open-Meteo marine returned no hours');
 
-  // Index weather by unix time for merging onto the marine time base.
-  const wxByTs = new Map();
-  if (wh?.time?.length) {
-    for (let i = 0; i < wh.time.length; i++) {
-      wxByTs.set(wh.time[i], {
-        speed: wh.wind_speed_10m?.[i] ?? 0,
-        dir: wh.wind_direction_10m?.[i] ?? 0,
-        rain: wh.precipitation?.[i] ?? 0, // hourly totals => already mm/h
-      });
-    }
+  // Hourly wind/rain keyed by unix seconds, from the layered weather sources.
+  let wxByTs = new Map();
+  if (wxRes.status === 'fulfilled') {
+    wxByTs = wxRes.value.byTs;
+    warnings.push(...wxRes.value.warnings);
+  } else {
+    warnings.push(`weather fetch failed (${wxRes.reason?.message}); wind/rain unavailable for these hours`);
   }
+
+  const mh = marine?.hourly;
+  if (!mh?.time?.length) throw new Error('Open-Meteo marine returned no hours');
 
   const hours = [];
   for (let i = 0; i < mh.time.length; i++) {

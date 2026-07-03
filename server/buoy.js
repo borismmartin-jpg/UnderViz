@@ -16,7 +16,7 @@ export const BUOYS = [
     name: 'Rottnest Island (DoT via AODN)',
     lat: -32.1, lon: 115.4,
     cql: "site_name ILIKE '%rottnest%'",
-    maxKm: 70,
+    maxKm: 200,
   },
 ];
 
