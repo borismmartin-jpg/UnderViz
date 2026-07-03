@@ -22,16 +22,28 @@ async function getJson(url) {
 
 /**
  * Fetch hourly records from Open-Meteo (marine + weather), past & forecast.
- * @returns {Promise<Array>} hourly records { ts, swell1, swell2, wind, rain }
+ * The marine call is required; the weather call degrades gracefully (waves
+ * dominate the sediment model, so marine-only data is far better than none).
+ * @returns {Promise<{hours:Array, warnings:Array<string>}>}
  */
 export async function fetchOpenMeteoHours(lat, lon, { pastDays = 7, forecastDays = 7 } = {}) {
   const common = `latitude=${lat}&longitude=${lon}&past_days=${pastDays}&forecast_days=${forecastDays}&timeformat=unixtime&timezone=UTC`;
   const marineUrl = `https://marine-api.open-meteo.com/v1/marine?${common}` +
-    '&hourly=swell_wave_height,swell_wave_period,swell_wave_direction';
+    '&hourly=swell_wave_height,swell_wave_period,swell_wave_direction,' +
+    'wind_wave_height,wind_wave_period,wind_wave_direction';
   const wxUrl = `https://api.open-meteo.com/v1/forecast?${common}` +
     '&hourly=wind_speed_10m,wind_direction_10m,precipitation&wind_speed_unit=ms';
 
-  const [marine, wx] = await Promise.all([getJson(marineUrl), getJson(wxUrl)]);
+  const warnings = [];
+  const [marineRes, wxRes] = await Promise.allSettled([getJson(marineUrl), getJson(wxUrl)]);
+  if (marineRes.status === 'rejected') throw marineRes.reason;
+  const marine = marineRes.value;
+  let wx = null;
+  if (wxRes.status === 'rejected') {
+    warnings.push(`Open-Meteo weather failed (${wxRes.reason?.message}); wind/rain unavailable for these hours`);
+  } else {
+    wx = wxRes.value;
+  }
   const mh = marine?.hourly, wh = wx?.hourly;
   if (!mh?.time?.length) throw new Error('Open-Meteo marine returned no hours');
 
@@ -59,9 +71,14 @@ export async function fetchOpenMeteoHours(lat, lon, { pastDays = 7, forecastDays
         direction: mh.swell_wave_direction?.[i] ?? null,
       },
       swell2: { height: 0, period: 0, direction: null },
+      windsea: {
+        height: mh.wind_wave_height?.[i] ?? 0,
+        period: mh.wind_wave_period?.[i] ?? 0,
+        direction: mh.wind_wave_direction?.[i] ?? null,
+      },
       wind: { speed: w.speed ?? 0, dir: w.dir ?? 0 },
       rain: w.rain ?? 0,
     });
   }
-  return hours;
+  return { hours, warnings };
 }

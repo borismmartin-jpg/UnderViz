@@ -5,7 +5,7 @@
 //   the payload's generatedAt).
 // Bump VERSION when shell files change in a breaking way.
 
-const VERSION = 'underviz-v1';
+const VERSION = 'underviz-v2';
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

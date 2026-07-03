@@ -6,11 +6,21 @@ import {
   solveWavenumber,
   bedOrbitalVelocity,
   windSea,
+  wavePower,
   fetchForDirection,
   stepSediment,
   stepRunoff,
   visibilityFrom,
 } from '../lib/physics.js';
+
+test('wave power: P = rho*g^2*H^2*T/(64*pi); zero for degenerate input', () => {
+  // 2 m @ 10 s: P = 1025*9.81^2*4*10/(64*pi) ~= 19.6 kW/m
+  const p = wavePower(2, 10);
+  assert.ok(Math.abs(p - (1025 * 9.81 ** 2 * 4 * 10) / (64 * Math.PI)) < 1e-9);
+  assert.ok(Math.abs(p / 1000 - 19.63) < 0.05, `P=${p / 1000} kW/m`);
+  assert.equal(wavePower(0, 10), 0);
+  assert.equal(wavePower(2, 0), 0);
+});
 
 test('dispersion: T=12 s, d=10 m matches published intermediate-depth solution', () => {
   // omega^2 d / g = kd*tanh(kd) = 0.27944 -> kd ~= 0.5544 -> k ~= 0.0554 rad/m

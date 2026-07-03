@@ -51,14 +51,26 @@ Stepped hourly from 7 days in the past to the end of the forecast horizon.
 All constants live in [lib/config.js](lib/config.js), named and commented with units.
 
 **1 · Wave forcing → bed orbital velocity** (linear/Airy theory, per component:
-swell1, swell2, and a fetch-limited wind sea computed from wind speed `U` and
-per-site directional fetch `F`):
+swell1, swell2 and the wind sea):
 
     ω² = g·k·tanh(k·d)                (Newton iteration for k, |Δk| < 1e-6)
     u_b = π·H / (T·sinh(k·d))          (k·d capped at 50; deep water → u_b → 0)
-    H_ws = 0.0016·(U²/g)·√(g·F/U²)     (capped at the Pierson–Moskowitz
-    T_ws = 0.286·(U/g)·(g·F/U²)^(1/3)   fully-developed sea)
     u_b,total = √(Σ u_b,i²)
+
+The wind sea prefers the wave model's own `windWaves` component (Windy
+`gfsWave` / Open-Meteo `wind_wave_*` — captures duration effects and remotely
+generated seas), **capped by the site's fetch-limited estimate** so local
+sheltering still applies (offshore wind → flat water even when the offshore
+grid point carries wind sea):
+
+    H_ws = min(H_windWaves, 0.0016·(U²/g)·√(g·F/U²))
+    T_ws = 0.286·(U/g)·(g·F/U²)^(1/3)  when the fetch cap governs
+    (fetch-limited growth itself capped at the Pierson–Moskowitz sea)
+
+The explainer panel also reports each component's deep-water wave energy flux
+`P = ρ·g²·H²·T/(64π)` [kW/m] as an auditable "wave power" readout; resuspension
+itself is driven by bed orbital velocity (which includes depth attenuation
+that surface wave power lacks).
 
 **2 · Sediment mass balance** (explicit Euler, hourly; the source of the
 1–2 day lag/recovery after swell events — no ad-hoc "swell days" factor):

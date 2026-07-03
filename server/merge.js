@@ -66,6 +66,8 @@ export function mergeWindy(wave, met) {
   const s1h = wS('swell1_height-surface'), s1p = wS('swell1_period-surface');
   const s2h = wS('swell2_height-surface'), s2p = wS('swell2_period-surface');
   const wvh = wS('waves_height-surface'), wvp = wS('waves_period-surface');
+  // "windWaves" parameter comes back under "wwaves_*" keys
+  const wwh = wS('wwaves_height-surface'), wwp = wS('wwaves_period-surface');
   const u = cleanSeries(mts, met['wind_u-surface'] ?? []);
   const v = cleanSeries(mts, met['wind_v-surface'] ?? []);
   const precipVals = met['past3hprecip-surface'] ?? met['precip-surface'] ?? [];
@@ -91,10 +93,15 @@ export function mergeWindy(wave, met) {
         direction: interpAngleAt(wts, wave['waves_direction-surface'] ?? [], t),
       };
     }
+    const windsea = {
+      height: interpAt(wwh, t) ?? 0,
+      period: interpAt(wwp, t) ?? 0,
+      direction: interpAngleAt(wts, wave['wwaves_direction-surface'] ?? [], t),
+    };
     const uu = interpAt(u, t) ?? 0, vv = interpAt(v, t) ?? 0;
     const speed = Math.hypot(uu, vv); // [m/s]
     const dir = ((270 - (Math.atan2(vv, uu) * 180) / Math.PI) % 360 + 360) % 360; // meteorological "from"
-    return { ts: t, swell1, swell2, wind: { speed, dir }, rain: precipRateAt(mts, precipVals, t) };
+    return { ts: t, swell1, swell2, windsea, wind: { speed, dir }, rain: precipRateAt(mts, precipVals, t) };
   });
 }
 

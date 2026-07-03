@@ -32,7 +32,7 @@ async function post(body) {
 export async function fetchWindyHours(lat, lon, key) {
   if (!key) throw new Error('WINDY_API_KEY not set');
   const [wave, met] = await Promise.all([
-    post({ lat, lon, model: 'gfsWave', parameters: ['waves', 'swell1', 'swell2'], levels: ['surface'], key }),
+    post({ lat, lon, model: 'gfsWave', parameters: ['waves', 'swell1', 'swell2', 'windWaves'], levels: ['surface'], key }),
     post({ lat, lon, model: 'gfs', parameters: ['wind', 'precip'], levels: ['surface'], key }),
   ]);
   return mergeWindy(wave, met);

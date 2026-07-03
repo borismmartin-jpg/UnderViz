@@ -111,6 +111,40 @@ test('regression: pinned snapshot values (guards against accidental model change
   close(snapshot.day6, 5.727, 0.05, 'day6 vis');
 });
 
+test('pipeline: modelled wind sea is used when below the fetch limit', () => {
+  // Onshore W wind with huge fetch, but the wave model reports a modest,
+  // duration-limited wind sea -> the model value must win.
+  const hours = [{
+    ts: T0,
+    swell1: { height: 0, period: 0, direction: null },
+    swell2: { height: 0, period: 0, direction: null },
+    windsea: { height: 0.6, period: 5, direction: 260 },
+    wind: { speed: 12, dir: 270 }, // fetch-limited estimate would be far bigger
+    rain: 0,
+  }];
+  const out = runPipeline(hours, mettams, 3);
+  const ws = out[0].comps.find((c) => c.label === 'windsea');
+  assert.equal(ws.src, 'model');
+  assert.ok(Math.abs(ws.H - 0.6) < 1e-12 && Math.abs(ws.T - 5) < 1e-12);
+});
+
+test('pipeline: modelled wind sea is capped by site fetch (offshore wind)', () => {
+  // The offshore grid point carries a 1.5 m wind sea, but the wind blows from
+  // the land (E, ~1 km fetch) -> the site stays sheltered.
+  const hours = [{
+    ts: T0,
+    swell1: { height: 0, period: 0, direction: null },
+    swell2: { height: 0, period: 0, direction: null },
+    windsea: { height: 1.5, period: 6, direction: 90 },
+    wind: { speed: 12, dir: 90 },
+    rain: 0,
+  }];
+  const out = runPipeline(hours, mettams, 3);
+  const ws = out[0].comps.find((c) => c.label === 'windsea');
+  assert.equal(ws.src, 'fetch-capped');
+  assert.ok(ws.H < 0.25, `sheltered site wind sea H=${ws.H} should be tiny`);
+});
+
 test('pipeline: offshore wind produces (near-)zero wind sea', () => {
   // Easterly over Mettams' 1 km land-side fetch: a few-cm ripple whose short
   // period cannot reach the bed — u_b must be negligible.

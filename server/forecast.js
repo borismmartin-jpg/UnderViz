@@ -48,10 +48,12 @@ export async function getForecast(lat, lon) {
   }
   if (!forecastHours) {
     try {
-      forecastHours = await fetchOpenMeteoHours(lat, lon, {
+      const om = await fetchOpenMeteoHours(lat, lon, {
         pastDays: MODEL.HINDCAST_DAYS,
         forecastDays: MODEL.FORECAST_DAYS,
       });
+      forecastHours = om.hours;
+      warnings.push(...om.warnings);
       source = 'open-meteo';
     } catch (err) {
       warnings.push(`Open-Meteo failed (${err.message})`);
@@ -82,16 +84,29 @@ export async function getForecast(lat, lon) {
   // 4. Hindcast: accumulated history first; fill gaps from Open-Meteo.
   let past = history.range(key, histFrom, now);
   const expected = MODEL.HINDCAST_DAYS * 24;
-  if (past.length < expected * 0.8 && source === 'windy') {
+  // Refetch the Open-Meteo hindcast when history has gaps OR stored hours
+  // predate a field the model now uses (e.g. windsea).
+  const needsHindcast = past.length < expected * 0.8 || past.some((h) => h.windsea == null);
+  if (needsHindcast && source === 'windy') {
     try {
       const om = await fetchOpenMeteoHours(lat, lon, {
         pastDays: MODEL.HINDCAST_DAYS,
         forecastDays: 1,
       });
-      const omPast = om.filter((h) => h.ts >= histFrom && h.ts < now);
-      // History (real accumulated forecasts) wins over Open-Meteo hindcast.
+      warnings.push(...om.warnings);
+      const omPast = om.hours.filter((h) => h.ts >= histFrom && h.ts < now);
+      // History (real accumulated forecasts) wins over Open-Meteo hindcast,
+      // but when Open-Meteo carries fields a stored hour lacks (e.g. windsea
+      // from before that field existed), keep the richer data.
+      const omByTs = new Map(omPast.map((h) => [h.ts, h]));
+      past = past.map((h) => {
+        const om2 = omByTs.get(h.ts);
+        return om2 && h.windsea == null ? { ...h, windsea: om2.windsea } : h;
+      });
       past = mergeHours(omPast, past);
-      history.upsert(key, omPast);
+      // Persist the merged result (history-wins already applied) so gap-fill
+      // and enrichment stick without clobbering stored Windy hours.
+      history.upsert(key, past);
     } catch (err) {
       // Cold start with no hindcast: the model simply spins up from the
       // earliest forecast hour — degraded but functional.

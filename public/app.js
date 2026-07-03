@@ -262,9 +262,14 @@ function renderConditions(r) {
       ? `${s.height.toFixed(1)} m <small>@ ${s.period?.toFixed(0) ?? '–'} s</small> ${dirArrow(s.direction)} <small>${degToCompass(s.direction)}</small>`
       : '<small>–</small>';
   const kn = (r.wind.speed * 1.94384).toFixed(0);
+  const wsComp = r.comps.find((c) => c.label === 'windsea');
+  const wsTile = wsComp && wsComp.H > 0.05
+    ? `${wsComp.H.toFixed(1)} m <small>@ ${wsComp.T.toFixed(0)} s</small> ${dirArrow(wsComp.dir)} <small>${degToCompass(wsComp.dir)}</small>`
+    : '<small>–</small>';
   $('#conditions').innerHTML = `
     <div class="cond"><div class="k">swell 1</div><div class="v">${sw(r.swell1)}</div></div>
     <div class="cond"><div class="k">swell 2</div><div class="v">${sw(r.swell2)}</div></div>
+    <div class="cond"><div class="k">wind sea</div><div class="v">${wsTile}</div></div>
     <div class="cond"><div class="k">wind</div><div class="v">${r.wind.speed.toFixed(1)} m/s <small>(${kn} kn)</small> ${dirArrow(r.wind.dir)} <small>${degToCompass(r.wind.dir)}</small></div></div>
     <div class="cond"><div class="k">rain</div><div class="v">${r.rain.toFixed(1)} <small>mm/h</small></div></div>
     <div class="cond"><div class="k">est. visibility</div><div class="v" style="color:${visColor(r.vis)}">${fmtVis(r.vis)} m</div></div>`;
@@ -273,18 +278,21 @@ function renderConditions(r) {
 // ---------- explainer ----------
 function renderExplain(r) {
   if (!r) return;
+  const wsName = { model: 'wind sea (wave model)', 'fetch-capped': 'wind sea (fetch-capped)', computed: 'wind sea (computed)' };
+  const fmtPower = (p) => (p >= 1000 ? `${(p / 1000).toFixed(1)} kW/m` : `${p.toFixed(0)} W/m`);
   const compRow = (c) => {
-    const name = c.label === 'windsea' ? 'wind sea (computed)' : c.label;
-    return `<tr><td>${name}</td><td>${c.H.toFixed(2)} m</td><td>${c.T.toFixed(1)} s</td><td>${c.ub.toFixed(3)} m/s</td></tr>`;
+    const name = c.label === 'windsea' ? (wsName[c.src] ?? 'wind sea') : c.label;
+    return `<tr><td>${name}</td><td>${c.H.toFixed(2)} m</td><td>${c.T.toFixed(1)} s</td><td>${fmtPower(c.power ?? 0)}</td><td>${c.ub.toFixed(3)} m/s</td></tr>`;
   };
   const pct = (x) => ((x / r.attenuation) * 100).toFixed(0);
+  const totalPower = r.comps.reduce((s, c) => s + (c.power ?? 0), 0);
   $('#explain').innerHTML = `
     <div class="section-label">1 · Wave forcing → bed orbital velocity (depth ${r.depth.toFixed(1)} m, fetch ${r.fetchKm.toFixed(0)} km)</div>
     <table>
-      <tr><th>component</th><th>H</th><th>T</th><th>u_b at bed</th></tr>
+      <tr><th>component</th><th>H</th><th>T</th><th>wave power</th><th>u_b at bed</th></tr>
       ${r.comps.map(compRow).join('')}
-      <tr class="total-row"><td>combined √Σu²</td><td></td><td></td><td>${r.ubTotal.toFixed(3)} m/s</td></tr>
-      <tr><td class="muted">critical u_crit</td><td></td><td></td><td class="muted">${r.uCrit.toFixed(2)} m/s ${r.ubTotal > r.uCrit ? '— <b>stirring</b>' : '— settled'}</td></tr>
+      <tr class="total-row"><td>combined √Σu²</td><td></td><td></td><td>${fmtPower(totalPower)}</td><td>${r.ubTotal.toFixed(3)} m/s</td></tr>
+      <tr><td class="muted">critical u_crit</td><td></td><td></td><td></td><td class="muted">${r.uCrit.toFixed(2)} m/s ${r.ubTotal > r.uCrit ? '— <b>stirring</b>' : '— settled'}</td></tr>
     </table>
     <div class="section-label">2 · Sediment &amp; runoff state</div>
     <table>
