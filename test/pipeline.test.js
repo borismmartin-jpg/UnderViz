@@ -33,8 +33,18 @@ function cannedScenario() {
 const mettams = SEED_SITES.find((s) => s.id === 'mettams');
 const westEnd = SEED_SITES.find((s) => s.id === 'rotto-west-end');
 
+// Calibration anchor from the spec: a fully exposed shallow metro sand site
+// (no directional shelter), independent of any seed site's exposure table.
+const EXPOSED_METRO = {
+  id: 'test-exposed-metro', name: 'Exposed metro test site',
+  lat: -31.9, lon: 115.75, depth_default: 3,
+  c0: 0.35, u_crit: 0.10, E: 1.0, w_s: 0.0002,
+  fetch: { N: 40, NE: 1, E: 1, SE: 1, S: 30, SW: 350, W: 500, NW: 300 },
+  runoff_r: 0.02,
+};
+
 test('regression: shallow exposed metro site bottoms out at ~1-3 m in the event', () => {
-  const out = runPipeline(cannedScenario(), mettams, 3);
+  const out = runPipeline(cannedScenario(), EXPOSED_METRO, 3);
   const minVis = Math.min(...out.map((r) => r.vis));
   assert.ok(minVis >= 1 && minVis <= 3, `min vis ${minVis} m not in 1-3 m`);
 });
@@ -95,8 +105,9 @@ test('regression: fresh 1 m swell at deep oceanic site stays >12 m vis', () => {
 });
 
 test('regression: pinned snapshot values (guards against accidental model change)', () => {
-  const out = runPipeline(cannedScenario(), mettams, 3);
-  // Pinned from the initial validated run; update deliberately if the model changes.
+  const out = runPipeline(cannedScenario(), EXPOSED_METRO, 3);
+  // Pinned from the validated run after adding exposure/breaking/tide/nudge;
+  // update deliberately if the model changes.
   const at = (day) => out[day * 24];
   const snapshot = {
     day1: at(1).vis,
@@ -107,8 +118,80 @@ test('regression: pinned snapshot values (guards against accidental model change
   const close = (a, b, tol, label) =>
     assert.ok(Math.abs(a - b) <= tol, `${label}: ${a} != pinned ${b} ±${tol}`);
   close(snapshot.day1, 7.107, 0.05, 'day1 vis');
-  close(snapshot.day4, 2.048, 0.05, 'day4 vis');
-  close(snapshot.day6, 5.727, 0.05, 'day6 vis');
+  close(snapshot.day4, 2.227, 0.05, 'day4 vis');
+  close(snapshot.day6, 5.728, 0.05, 'day6 vis');
+});
+
+test('pipeline: directional exposure scales swell height at the site', () => {
+  // Same swell, one site fully exposed vs one 50% sheltered from the SW.
+  const sheltered = { ...EXPOSED_METRO, exposure: { SW: 0.5 } };
+  const hours = cannedScenario().slice(0, 24);
+  const open = runPipeline(hours, EXPOSED_METRO, 3);
+  const shel = runPipeline(hours, sheltered, 3);
+  const hOpen = open[10].comps.find((c) => c.label === 'swell1');
+  const hShel = shel[10].comps.find((c) => c.label === 'swell1');
+  assert.ok(Math.abs(hShel.H - hOpen.H * 0.5) < 1e-9, `expected halved height, got ${hShel.H} vs ${hOpen.H}`);
+  assert.equal(hShel.expo, 0.5);
+  assert.ok(shel[23].vis > open[23].vis, 'sheltered site must read better vis');
+});
+
+test('pipeline: depth-limited breaking caps wave height at 0.78·d', () => {
+  const hours = [{
+    ts: T0,
+    swell1: { height: 4.0, period: 15, direction: 225 }, // huge swell on a 2 m bank
+    swell2: { height: 0, period: 0, direction: null },
+    wind: { speed: 2, dir: 90 },
+    rain: 0,
+  }];
+  const out = runPipeline(hours, EXPOSED_METRO, 2);
+  const s1 = out[0].comps.find((c) => c.label === 'swell1');
+  assert.ok(s1.capped, 'component should be flagged as breaking-capped');
+  assert.ok(Math.abs(s1.H - 0.78 * 2) < 1e-9, `H=${s1.H} should equal 0.78*d=1.56`);
+});
+
+test('pipeline: ebb tide boosts runoff turbidity at a river mouth, flood suppresses it', () => {
+  const northMole = SEED_SITES.find((s) => s.id === 'north-mole');
+  const mkHours = (rateSign) => {
+    const hours = [];
+    for (let h = 0; h < 48; h++) {
+      hours.push({
+        ts: T0 + h * HOUR,
+        swell1: { height: 0.3, period: 10, direction: 225 },
+        swell2: { height: 0, period: 0, direction: null },
+        wind: { speed: 2, dir: 90 },
+        rain: h < 12 ? 5 : 0,                       // steady rain half a day
+        seaLevel: rateSign * 0.06 * h,              // monotonic ebb or flood
+      });
+    }
+    return hours;
+  };
+  const ebb = runPipeline(mkHours(-1), northMole, 6);
+  const flood = runPipeline(mkHours(+1), northMole, 6);
+  const peakEbb = Math.max(...ebb.map((r) => r.Cr));
+  const peakFlood = Math.max(...flood.map((r) => r.Cr));
+  assert.ok(peakEbb > peakFlood * 1.5, `ebb Cr ${peakEbb} should clearly exceed flood Cr ${peakFlood}`);
+  assert.ok(ebb[10].tide.factor > 1 && flood[10].tide.factor < 1);
+});
+
+test('pipeline: buoy nudge scales heights fully in hindcast, fading over the forecast', () => {
+  const hours = [];
+  for (let h = 0; h < 72; h++) {
+    hours.push({
+      ts: T0 + h * HOUR,
+      swell1: { height: 1.0, period: 12, direction: 225 },
+      swell2: { height: 0, period: 0, direction: null },
+      wind: { speed: 2, dir: 90 },
+      rain: 0,
+    });
+  }
+  const obsTs = T0 + 36 * HOUR;
+  const out = runPipeline(hours, EXPOSED_METRO, 3, { nudge: { ratio: 1.4, ts: obsTs } });
+  const H = (i) => out[i].comps.find((c) => c.label === 'swell1').H;
+  assert.ok(Math.abs(H(0) - 1.4) < 1e-9, `pre-obs hour should be fully scaled, got ${H(0)}`);
+  assert.ok(Math.abs(H(36) - 1.4) < 1e-9, 'obs hour should be fully scaled');
+  const mid = out[36 + 9].comps.find((c) => c.label === 'swell1').H; // half the 18 h taper
+  assert.ok(Math.abs(mid - 1.2) < 0.01, `half-taper should be ~1.2, got ${mid}`);
+  assert.ok(Math.abs(H(36 + 30) - 1.0) < 1e-9, 'beyond the taper the nudge must vanish');
 });
 
 test('pipeline: modelled wind sea is used when below the fetch limit', () => {

@@ -51,7 +51,17 @@ Stepped hourly from 7 days in the past to the end of the forecast horizon.
 All constants live in [lib/config.js](lib/config.js), named and commented with units.
 
 **1 · Wave forcing → bed orbital velocity** (linear/Airy theory, per component:
-swell1, swell2 and the wind sea):
+swell1, swell2 and the wind sea). Each component's height passes through three
+stages before reaching the bed-orbital computation:
+
+    H_site = min( H_offshore · nudge · exposure(dir),  0.78·d )
+
+- *nudge*: wave-buoy correction (below);
+- *exposure(dir)*: per-site 0–1 factor by 8 compass sectors for the direction
+  the swell comes FROM (island/reef/land shadowing — Salmon Bay ignores a NW
+  storm, cops a southerly);
+- *0.78·d*: depth-limited breaking (McCowan) — a 3 m bank physically cannot
+  carry a 2.5 m wave.
 
     ω² = g·k·tanh(k·d)                (Newton iteration for k, |Δk| < 1e-6)
     u_b = π·H / (T·sinh(k·d))          (k·d capped at 50; deep water → u_b → 0)
@@ -77,9 +87,22 @@ that surface wave power lacks).
 
     dC/dt = E·max(u_b,total − u_crit, 0)^1.5 − (w_s/d)·C
 
-**3 · Rain → runoff turbidity** (exponential decay, T_flush ≈ 2.5 days):
+**3 · Rain → runoff turbidity** (exponential decay, T_flush ≈ 2.5 days),
+tide-modulated at river-mouth sites — an ebb tide pushes the turbid plume over
+the site, a flood holds it back:
 
-    dC_r/dt = r_site·rain(t) − C_r/T_flush
+    dC_r/dt = tide(t)·r_site·rain(t) − C_r/T_flush
+    tide(t) = 1 + 0.75·clamp(−dη/dt / 0.08 m·h⁻¹, −1, +1)
+
+`η` is Open-Meteo Marine's `sea_level_height_msl` (tide + surge). Applied only
+where `runoff_r > 0`.
+
+**Wave-buoy nudging.** The latest observation from the nearest real wave buoy
+(DoT Rottnest Island, via the AODN near-real-time WFS) is compared against the
+model **at the buoy's own location** and the ratio (clamped 0.5–1.8) scales
+all wave heights: fully for hours up to the observation, fading to 1 over the
+next 18 forecast hours. Feed down / buoy too far / observation older than 24 h
+→ no nudge, model runs raw.
 
 **4 · Optics → visibility** (Secchi-type, clamped 0.5–40 m):
 

@@ -4,7 +4,7 @@
 
 import { MODEL, PHYS } from '/lib/config.js';
 import { runPipeline } from '/lib/physics.js';
-import { SEED_SITES, BOTTOM_PRESETS, DEFAULT_FETCH } from '/lib/sites.js';
+import { SEED_SITES, BOTTOM_PRESETS, DEFAULT_FETCH, exposureFromFetch } from '/lib/sites.js';
 
 const LS_CUSTOM = 'underviz.customSites';
 const LS_DEPTHS = 'underviz.depthOverrides';
@@ -96,11 +96,22 @@ async function selectSite(id) {
   }
 }
 
+// Buoy nudge: observed Hs vs modelled Hs, both AT THE BUOY's location
+// (hsModel is computed server-side at the buoy's coordinates — comparing an
+// offshore buoy against this site's nearshore grid point would bias it).
+function buildNudge(payload) {
+  const b = payload.buoy;
+  if (!b || !(b.hs > 0) || !(b.hsModel > 0.2)) return null;
+  const ratio = Math.min(PHYS.NUDGE_RATIO_MAX, Math.max(PHYS.NUDGE_RATIO_MIN, b.hs / b.hsModel));
+  return { ratio, ts: b.at, hsObs: b.hs, hsModel: b.hsModel, name: b.name, distKm: b.distKm };
+}
+
 function recompute() {
   const site = state.sites.find((s) => s.id === state.siteId);
   if (!site || !state.payload) return;
   const depth = depthFor(site);
-  state.results = runPipeline(state.payload.hours, site, depth);
+  state.nudge = buildNudge(state.payload);
+  state.results = runPipeline(state.payload.hours, site, depth, { nudge: state.nudge });
   renderDepth(site, depth);
   renderAll();
 }
@@ -272,6 +283,7 @@ function renderConditions(r) {
     <div class="cond"><div class="k">wind sea</div><div class="v">${wsTile}</div></div>
     <div class="cond"><div class="k">wind</div><div class="v">${r.wind.speed.toFixed(1)} m/s <small>(${kn} kn)</small> ${dirArrow(r.wind.dir)} <small>${degToCompass(r.wind.dir)}</small></div></div>
     <div class="cond"><div class="k">rain</div><div class="v">${r.rain.toFixed(1)} <small>mm/h</small></div></div>
+    <div class="cond"><div class="k">tide</div><div class="v">${r.tide ? `${r.tide.level.toFixed(2)} m <small>${r.tide.rateMh == null ? '' : r.tide.rateMh >= 0 ? '▲ rising' : '▼ falling'}</small>` : '<small>–</small>'}</div></div>
     <div class="cond"><div class="k">est. visibility</div><div class="v" style="color:${visColor(r.vis)}">${fmtVis(r.vis)} m</div></div>`;
 }
 
@@ -282,18 +294,30 @@ function renderExplain(r) {
   const fmtPower = (p) => (p >= 1000 ? `${(p / 1000).toFixed(1)} kW/m` : `${p.toFixed(0)} W/m`);
   const compRow = (c) => {
     const name = c.label === 'windsea' ? (wsName[c.src] ?? 'wind sea') : c.label;
-    return `<tr><td>${name}</td><td>${c.H.toFixed(2)} m</td><td>${c.T.toFixed(1)} s</td><td>${fmtPower(c.power ?? 0)}</td><td>${c.ub.toFixed(3)} m/s</td></tr>`;
+    // Show the raw offshore height and what survives exposure + breaking.
+    const hCell = c.H0 != null && Math.abs(c.H0 - c.H) > 0.01
+      ? `<span class="muted">${c.H0.toFixed(2)} →</span> ${c.H.toFixed(2)} m${c.capped ? ' <small class="muted">(breaking)</small>' : c.expo < 1 ? ` <small class="muted">(×${c.expo.toFixed(2)} exposure)</small>` : ''}`
+      : `${c.H.toFixed(2)} m`;
+    return `<tr><td>${name}</td><td>${hCell}</td><td>${c.T.toFixed(1)} s</td><td>${fmtPower(c.power ?? 0)}</td><td>${c.ub.toFixed(3)} m/s</td></tr>`;
   };
   const pct = (x) => ((x / r.attenuation) * 100).toFixed(0);
   const totalPower = r.comps.reduce((s, c) => s + (c.power ?? 0), 0);
+  const nudge = state.nudge;
+  const nudgeLine = nudge
+    ? `<div class="muted" style="margin-top:4px">buoy nudge ×${r.nudgeFactor.toFixed(2)} — ${nudge.name} (${nudge.distKm} km) observed ${nudge.hsObs.toFixed(1)} m vs model ${nudge.hsModel.toFixed(1)} m at ${fmtTime(nudge.ts)}</div>`
+    : '';
+  const tideLine = r.tide
+    ? `<div class="muted" style="margin-top:4px">tide: ${r.tide.level.toFixed(2)} m MSL, ${r.tide.rateMh == null ? '–' : (r.tide.rateMh >= 0 ? 'rising' : 'falling') + ' ' + Math.abs(r.tide.rateMh * 100).toFixed(0) + ' cm/h'}${r.tide.factor !== 1 ? ` → runoff source ×${r.tide.factor.toFixed(2)} (${r.tide.factor > 1 ? 'ebb pushes plume out' : 'flood holds plume back'})` : ''}</div>`
+    : '';
   $('#explain').innerHTML = `
-    <div class="section-label">1 · Wave forcing → bed orbital velocity (depth ${r.depth.toFixed(1)} m, fetch ${r.fetchKm.toFixed(0)} km)</div>
+    <div class="section-label">1 · Wave forcing → bed orbital velocity (depth ${r.depth.toFixed(1)} m, fetch ${r.fetchKm.toFixed(0)} km, breaking cap ${(PHYS.GAMMA_BREAK * r.depth).toFixed(1)} m)</div>
     <table>
-      <tr><th>component</th><th>H</th><th>T</th><th>wave power</th><th>u_b at bed</th></tr>
+      <tr><th>component</th><th>H offshore → at site</th><th>T</th><th>wave power</th><th>u_b at bed</th></tr>
       ${r.comps.map(compRow).join('')}
       <tr class="total-row"><td>combined √Σu²</td><td></td><td></td><td>${fmtPower(totalPower)}</td><td>${r.ubTotal.toFixed(3)} m/s</td></tr>
       <tr><td class="muted">critical u_crit</td><td></td><td></td><td></td><td class="muted">${r.uCrit.toFixed(2)} m/s ${r.ubTotal > r.uCrit ? '— <b>stirring</b>' : '— settled'}</td></tr>
     </table>
+    ${nudgeLine}${tideLine}
     <div class="section-label">2 · Sediment &amp; runoff state</div>
     <table>
       <tr><td>suspended sediment index C</td><td>${r.C.toFixed(2)}</td></tr>
@@ -345,6 +369,7 @@ function initDialog() {
       E: preset.E,
       w_s: preset.w_s,
       fetch: fetchTable,
+      exposure: exposureFromFetch(fetchTable),
       runoff_r: Number(fd.get('runoff')),
       notes: `Custom site (${preset.label.split(' ')[0].toLowerCase()} bottom)`,
       custom: true,

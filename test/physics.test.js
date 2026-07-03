@@ -8,10 +8,43 @@ import {
   windSea,
   wavePower,
   fetchForDirection,
+  exposureForDirection,
+  tideRunoffFactor,
+  nudgeFactorAt,
   stepSediment,
   stepRunoff,
   visibilityFrom,
 } from '../lib/physics.js';
+
+test('exposure lookup: sector match, clamping, safe defaults', () => {
+  const table = { SW: 0.5, W: 1, S: 0 };
+  assert.equal(exposureForDirection(table, 225), 0.5);
+  assert.equal(exposureForDirection(table, 180), 0);
+  assert.equal(exposureForDirection(table, 315), 1);  // missing sector -> exposed
+  assert.equal(exposureForDirection(null, 225), 1);   // missing table -> exposed
+  assert.equal(exposureForDirection(table, null), 1); // unknown direction -> exposed
+  assert.equal(exposureForDirection({ SW: 7 }, 225), 1); // clamped to [0,1]
+});
+
+test('tide factor: ebb boosts, flood suppresses, saturates, null-safe', () => {
+  const g = PHYS.TIDE_EBB_GAIN;
+  assert.ok(Math.abs(tideRunoffFactor(-PHYS.TIDE_RATE_REF) - (1 + g)) < 1e-12);
+  assert.ok(Math.abs(tideRunoffFactor(PHYS.TIDE_RATE_REF) - (1 - g)) < 1e-12);
+  assert.ok(Math.abs(tideRunoffFactor(-10) - (1 + g)) < 1e-12); // saturated
+  assert.equal(tideRunoffFactor(null), 1);
+  assert.equal(tideRunoffFactor(0), 1);
+});
+
+test('nudge factor: full before obs, linear taper after, unity without nudge', () => {
+  const nudge = { ratio: 1.5, ts: 1000 * 3.6e6 };
+  const H = 3.6e6;
+  assert.equal(nudgeFactorAt(nudge, nudge.ts - 100 * H), 1.5);
+  assert.equal(nudgeFactorAt(nudge, nudge.ts), 1.5);
+  const half = nudgeFactorAt(nudge, nudge.ts + (PHYS.NUDGE_TAPER_H / 2) * H);
+  assert.ok(Math.abs(half - 1.25) < 1e-9, `half-taper ${half}`);
+  assert.equal(nudgeFactorAt(nudge, nudge.ts + 2 * PHYS.NUDGE_TAPER_H * H), 1);
+  assert.equal(nudgeFactorAt(null, 0), 1);
+});
 
 test('wave power: P = rho*g^2*H^2*T/(64*pi); zero for degenerate input', () => {
   // 2 m @ 10 s: P = 1025*9.81^2*4*10/(64*pi) ~= 19.6 kW/m

@@ -30,7 +30,7 @@ export async function fetchOpenMeteoHours(lat, lon, { pastDays = 7, forecastDays
   const common = `latitude=${lat}&longitude=${lon}&past_days=${pastDays}&forecast_days=${forecastDays}&timeformat=unixtime&timezone=UTC`;
   const marineUrl = `https://marine-api.open-meteo.com/v1/marine?${common}` +
     '&hourly=swell_wave_height,swell_wave_period,swell_wave_direction,' +
-    'wind_wave_height,wind_wave_period,wind_wave_direction';
+    'wind_wave_height,wind_wave_period,wind_wave_direction,sea_level_height_msl';
   const wxUrl = `https://api.open-meteo.com/v1/forecast?${common}` +
     '&hourly=wind_speed_10m,wind_direction_10m,precipitation&wind_speed_unit=ms';
 
@@ -76,6 +76,7 @@ export async function fetchOpenMeteoHours(lat, lon, { pastDays = 7, forecastDays
         period: mh.wind_wave_period?.[i] ?? 0,
         direction: mh.wind_wave_direction?.[i] ?? null,
       },
+      seaLevel: mh.sea_level_height_msl?.[i] ?? null, // tide+surge [m MSL]
       wind: { speed: w.speed ?? 0, dir: w.dir ?? 0 },
       rain: w.rain ?? 0,
     });
