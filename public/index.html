@@ -25,15 +25,21 @@
   <div id="banner" class="banner hidden"></div>
 
   <div class="layout">
-    <aside class="sidebar">
-      <div class="sidebar-head">
-        <h2>Sites</h2>
-        <button id="addSiteBtn" class="ghost" title="Add a custom site">＋ add</button>
-      </div>
-      <ul id="siteList" class="site-list"></ul>
-    </aside>
-
     <main class="main">
+      <section class="card picker-card">
+        <div class="picker-row">
+          <label class="field">
+            <span class="field-label">Location</span>
+            <select id="siteSelect"></select>
+          </label>
+          <button id="addSiteBtn" class="ghost" title="Add a custom site">＋ add site</button>
+        </div>
+        <div class="date-block">
+          <div class="field-label">Plan for a day <span class="muted">— tap a day for its best window</span></div>
+          <div id="dayChips" class="day-chips"></div>
+        </div>
+      </section>
+
       <section class="hero card">
         <div class="hero-left">
           <div class="hero-label">estimated visibility <span id="heroWhen"></span></div>

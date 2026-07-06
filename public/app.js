@@ -19,8 +19,11 @@ const state = {
   siteId: null,
   payload: null,   // server response { source, stale, hours, warnings }
   results: null,   // runPipeline output
-  selTs: null,     // selected timestamp on the timeline
+  selTs: null,     // selected timestamp on the timeline (null = now)
+  selDay: null,    // selected day's local midnight (null = today)
 };
+
+const startOfDay = (ts) => { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); };
 
 // ---------- persistence helpers ----------
 const loadJson = (k, fallback) => {
@@ -52,23 +55,16 @@ const dirArrow = (d) =>
 const fmtTime = (ts) =>
   new Date(ts).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 
-// ---------- rendering: site list ----------
-function renderSiteList() {
+// ---------- rendering: site dropdown ----------
+function renderSiteSelect() {
   const lastVis = loadJson(LS_LASTVIS, {});
-  const ul = $('#siteList');
-  ul.innerHTML = '';
-  for (const site of state.sites) {
-    const li = document.createElement('li');
-    li.className = site.id === state.siteId ? 'active' : '';
-    const lv = lastVis[site.id];
-    const badge = lv != null
-      ? `<span class="vis-badge" style="color:${visColor(lv)}">${fmtVis(lv)} m</span>`
-      : '<span class="vis-badge muted">–</span>';
-    li.innerHTML = `<div class="site-name">${site.name} ${badge}</div>
-      <div class="site-notes">${site.notes ?? ''}</div>`;
-    li.onclick = () => selectSite(site.id);
-    ul.appendChild(li);
-  }
+  const sel = $('#siteSelect');
+  sel.innerHTML = state.sites.map((s) => {
+    const lv = lastVis[s.id];
+    const suffix = lv != null ? ` — ${fmtVis(lv)} m` : '';
+    return `<option value="${s.id}">${s.name}${suffix}</option>`;
+  }).join('');
+  if (state.siteId != null) sel.value = state.siteId;
 }
 
 // ---------- data & model ----------
@@ -76,10 +72,13 @@ async function selectSite(id) {
   state.siteId = id;
   state.payload = null;
   state.results = null;
-  renderSiteList();
+  state.selTs = null;   // reset to "now"
+  state.selDay = null;  // reset to "today"
+  renderSiteSelect();
   const site = state.sites.find((s) => s.id === id);
-  $('#heroSite').textContent = site.name;
+  $('#heroSite').innerHTML = `${site.name}${site.notes ? ` <span class="muted">· ${site.notes}</span>` : ''}`;
   $('#heroVis').textContent = '…';
+  $('#dayChips').innerHTML = '';
   setBanner(null);
   try {
     const res = await fetch(`/api/forecast?lat=${site.lat}&lon=${site.lon}`);
@@ -88,7 +87,6 @@ async function selectSite(id) {
       throw new Error(body.error ?? `HTTP ${res.status}`);
     }
     state.payload = await res.json();
-    state.selTs = null;
     recompute();
   } catch (err) {
     $('#heroVis').textContent = '–';
@@ -145,39 +143,93 @@ function nearestResult(ts) {
 // ---------- rendering: main panels ----------
 function renderAll() {
   const now = Date.now();
-  const current = nearestResult(now);
-  if (!current) return;
+  const current = nearestResult(now);   // conditions at "now"
+  const sel = nearestResult(state.selTs ?? now); // the time being viewed
+  if (!current || !sel) return;
 
-  // hero + list badge cache
-  $('#heroVis').textContent = fmtVis(current.vis);
-  $('#heroVis').style.color = visColor(current.vis);
-  $('#heroWhen').textContent = 'now';
-  const nearestIn = (arr) => {
+  // Hero tracks the selected time so picking a day is reflected up top.
+  const isNow = Math.abs(sel.ts - now) < 90 * 60000;
+  $('#heroVis').textContent = fmtVis(sel.vis);
+  $('#heroVis').style.color = visColor(sel.vis);
+  $('#heroWhen').textContent = isNow ? 'now' : fmtTime(sel.ts);
+
+  // Bottom-type range at the viewed time.
+  const nearestIn = (arr, ts) => {
     if (!arr?.length) return null;
     let best = arr[0];
-    for (const r of arr) if (Math.abs(r.ts - now) < Math.abs(best.ts - now)) best = r;
+    for (const r of arr) if (Math.abs(r.ts - ts) < Math.abs(best.ts - ts)) best = r;
     return best;
   };
-  const hiR = nearestIn(state.resultsCoarse), loR = nearestIn(state.resultsFine);
+  const hiR = nearestIn(state.resultsCoarse, sel.ts), loR = nearestIn(state.resultsFine, sel.ts);
   if (hiR && loR) {
-    const hi = Math.max(current.vis, hiR.vis, loR.vis);
-    const lo = Math.min(current.vis, hiR.vis, loR.vis);
+    const hi = Math.max(sel.vis, hiR.vis, loR.vis);
+    const lo = Math.min(sel.vis, hiR.vis, loR.vis);
     $('#heroRange').textContent = `${fmtVis(lo)}–${fmtVis(hi)} m depending on bottom type`;
   } else {
     $('#heroRange').textContent = '';
   }
+
+  // Cache the "now" vis for the dropdown badge.
   const lastVis = loadJson(LS_LASTVIS, {});
   lastVis[state.siteId] = current.vis;
   saveJson(LS_LASTVIS, lastVis);
-  renderSiteList();
+  renderSiteSelect();
 
+  renderDayChips(now);
   renderBestWindow(now);
   renderSourceTag();
   renderChart(now);
-  const sel = nearestResult(state.selTs ?? now);
   renderConditions(sel);
   renderExplain(sel);
   renderWarnings();
+}
+
+// ---------- day picker ----------
+// Best daylight result within [max(dayStart, now), dayStart+24h).
+function bestInDay(day0, now) {
+  const day1 = day0 + DAY_MS;
+  const from = Math.max(day0, now);
+  let best = null;
+  for (const r of state.results) {
+    if (r.ts < from || r.ts >= day1) continue;
+    const h = new Date(r.ts).getHours();
+    if (h < MODEL.DAYLIGHT_START_H || h >= MODEL.DAYLIGHT_END_H) continue;
+    if (!best || r.vis > best.vis) best = r;
+  }
+  return best;
+}
+
+function renderDayChips(now) {
+  const el = $('#dayChips');
+  const today0 = startOfDay(now);
+  const selDay = state.selDay ?? today0;
+  let html = '';
+  for (let i = 0; i < MODEL.FORECAST_DAYS; i++) {
+    const day0 = today0 + i * DAY_MS;
+    const best = bestInDay(day0, now);
+    const d = new Date(day0);
+    const label = i === 0 ? 'Today' : d.toLocaleDateString([], { weekday: 'short' });
+    const date = d.toLocaleDateString([], { day: 'numeric', month: 'short' });
+    const visTxt = best ? `${fmtVis(best.vis)} m` : '–';
+    const col = best ? visColor(best.vis) : 'var(--muted)';
+    const active = day0 === selDay ? ' active' : '';
+    html += `<button class="day-chip${active}" data-day="${day0}"${best ? '' : ' disabled'}>
+      <span class="dc-day">${label}</span><span class="dc-date">${date}</span>
+      <span class="dc-vis" style="color:${col}">${visTxt}</span></button>`;
+  }
+  el.innerHTML = html;
+  el.querySelectorAll('.day-chip').forEach((btn) => {
+    btn.addEventListener('click', () => selectDay(Number(btn.dataset.day)));
+  });
+}
+
+// Pick a day -> jump the whole view to that day's best window.
+function selectDay(day0) {
+  const now = Date.now();
+  state.selDay = day0;
+  const best = bestInDay(day0, now);
+  state.selTs = best ? best.ts : Math.max(day0, now);
+  renderAll();
 }
 
 function renderWarnings() {
@@ -301,17 +353,14 @@ function renderChart(now) {
   $('#chartWrap').innerHTML = svg;
 
   const el = $('#chartSvg');
-  const pick = (ev) => {
+  el.addEventListener('click', (ev) => {
     const rect = el.getBoundingClientRect();
     const fx = ((ev.clientX - rect.left) / rect.width) * CH.w;
     const t = tMin + ((fx - CH.padL) / (CH.w - CH.padL - CH.padR)) * (tMax - tMin);
     state.selTs = Math.min(Math.max(t, tMin), tMax);
-    renderChart(now);
-    const sel = nearestResult(state.selTs);
-    renderConditions(sel);
-    renderExplain(sel);
-  };
-  el.addEventListener('click', pick);
+    state.selDay = startOfDay(state.selTs); // keep the day chips in sync
+    renderAll();
+  });
 }
 
 // ---------- conditions strip ----------
@@ -460,7 +509,8 @@ function init() {
   state.sites = allSites();
   initDialog();
   initPwa();
-  renderSiteList();
+  $('#siteSelect').addEventListener('change', (e) => selectSite(e.target.value));
+  renderSiteSelect();
   selectSite(state.sites[0].id);
 }
 init();

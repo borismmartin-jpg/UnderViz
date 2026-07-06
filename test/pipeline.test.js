@@ -4,7 +4,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runPipeline } from '../lib/physics.js';
-import { SEED_SITES } from '../lib/sites.js';
 
 const HOUR = 3.6e6;
 const T0 = Date.UTC(2026, 0, 5); // fixed epoch => fully deterministic
@@ -30,8 +29,28 @@ function cannedScenario() {
   return hours;
 }
 
-const mettams = SEED_SITES.find((s) => s.id === 'mettams');
-const westEnd = SEED_SITES.find((s) => s.id === 'rotto-west-end');
+// Inline site fixtures so the suite is independent of edits to the seed list.
+const mettams = {
+  id: 'mettams', name: 'Mettams Pool', lat: -31.8622, lon: 115.7546, depth_default: 3,
+  c0: 0.35, u_crit: 0.10, E: 1.0, w_s: 0.0002,
+  fetch: { N: 40, NE: 1, E: 1, SE: 1, S: 30, SW: 350, W: 500, NW: 300 },
+  exposure: { N: 0.3, NE: 0.05, E: 0.05, SE: 0.05, S: 0.35, SW: 0.65, W: 0.75, NW: 0.6 },
+  runoff_r: 0.02,
+};
+const northMole = {
+  id: 'north-mole', name: 'North Mole', lat: -32.0553, lon: 115.7350, depth_default: 6,
+  c0: 0.40, u_crit: 0.08, E: 1.2, w_s: 0.0001,
+  fetch: { N: 30, NE: 1, E: 1, SE: 5, S: 60, SW: 400, W: 500, NW: 300 },
+  exposure: { N: 0.2, NE: 0.05, E: 0.05, SE: 0.1, S: 0.4, SW: 0.8, W: 0.9, NW: 0.6 },
+  runoff_r: 0.15,
+};
+const westEnd = {
+  id: 'rotto-west-end', name: 'Rottnest West End', lat: -32.0230, lon: 115.4490, depth_default: 18,
+  c0: 0.16, u_crit: 0.13, E: 0.3, w_s: 0.0004,
+  fetch: { N: 300, NE: 15, E: 10, SE: 100, S: 400, SW: 500, W: 500, NW: 500 },
+  exposure: { N: 0.9, NE: 0.3, E: 0.2, SE: 0.5, S: 0.9, SW: 1, W: 1, NW: 1 },
+  runoff_r: 0,
+};
 
 // Calibration anchor from the spec: a fully exposed shallow metro sand site
 // (no directional shelter), independent of any seed site's exposure table.
@@ -52,7 +71,6 @@ test('regression: shallow exposed metro site bottoms out at ~1-3 m in the event'
 test('regression: sediment lag — worst vis late in the event, ~1-2 day recovery', () => {
   // Fine-silt river-mouth site (slow settling): day 0 calm, days 1-4 event,
   // days 4-7 calm again. This is where the (w_s/d) decay term shows its lag.
-  const northMole = SEED_SITES.find((s) => s.id === 'north-mole');
   const hours = [];
   for (let h = 0; h < 7 * 24; h++) {
     const day = h / 24;
@@ -79,7 +97,6 @@ test('regression: sediment lag — worst vis late in the event, ~1-2 day recover
 });
 
 test('regression: rain burst raises runoff term at a river-mouth site, not offshore', () => {
-  const northMole = SEED_SITES.find((s) => s.id === 'north-mole');
   const outNM = runPipeline(cannedScenario(), northMole, 6);
   const outWE = runPipeline(cannedScenario(), westEnd, 18);
   const peakNM = Math.max(...outNM.map((r) => r.Cr));
@@ -150,7 +167,6 @@ test('pipeline: depth-limited breaking caps wave height at 0.78·d', () => {
 });
 
 test('pipeline: ebb tide boosts runoff turbidity at a river mouth, flood suppresses it', () => {
-  const northMole = SEED_SITES.find((s) => s.id === 'north-mole');
   const mkHours = (rateSign) => {
     const hours = [];
     for (let h = 0; h < 48; h++) {
